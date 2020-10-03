@@ -1,5 +1,7 @@
-github.com/abstract-p2p/go-psyche v0.0.0-20200906081850-7886ae33a78f h1:0OTeNVTVm9c/RDp1Fi3pbF3Lx6pii7U40Tz948aWWhk=
-github.com/abstract-p2p/go-psyche v0.0.0-20200906081850-7886ae33a78f/go.mod h1:P0PizRc72k/v1fkfdFpbhPKRQonvN/q+P+3NQbIxUW8=
+github.com/abstract-p2p/go-psyche v0.0.0-20201003122253-5a5eb1c25fd1 h1:D9WOlmrOrkeC3Yxo0gxMyQ/Hl7r1ath6x8gqmOLLT2g=
+github.com/abstract-p2p/go-psyche v0.0.0-20201003122253-5a5eb1c25fd1/go.mod h1:P0PizRc72k/v1fkfdFpbhPKRQonvN/q+P+3NQbIxUW8=
+github.com/abstract-p2p/go-psyche v0.0.0-20201003125008-17340a4e14e8 h1:NN9yzFoO91E40gQHAJo5fR1KvBqkXoIpVTF7SV1Zyts=
+github.com/abstract-p2p/go-psyche v0.0.0-20201003125008-17340a4e14e8/go.mod h1:P0PizRc72k/v1fkfdFpbhPKRQonvN/q+P+3NQbIxUW8=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gin-contrib/sse v0.1.0/go.mod h1:RHrZQHXnP2xjPF+u1gW/2HnVO7nvIa9PG3Gm+fLHvGI=
