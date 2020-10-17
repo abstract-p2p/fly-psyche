@@ -2,8 +2,11 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
+	"time"
 
+	"github.com/Gaboose/fly-psyche/metrics"
 	"github.com/abstract-p2p/go-psyche"
 )
 
@@ -19,15 +22,32 @@ func main() {
 		"server": "fly-psyche",
 	})
 
+	mtr := metrics.New(node.NewEdge())
+	defer mtr.Close()
+
 	mux := http.NewServeMux()
+
 	mux.Handle("/", logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("here meet psychic beams"))
 	})))
-	mux.Handle("/psyche", logRequest(psyche.NewWebsocketHandler(node)))
+
+	mux.Handle("/psyche", metrics.InFlightMiddleware(
+		mtr.NewGauge("requests_in_flight", 0),
+		logRequest(psyche.NewWebsocketHandler(node)),
+	))
 
 	log.Println("listening on :8080")
-	err := http.ListenAndServe(":8080", mux)
+
+	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
+		panic(err)
+	}
+
+	if err := http.Serve(metrics.SentReceivedMiddleware(
+		mtr.NewGauge("bytes_sent", 2*time.Second),
+		mtr.NewGauge("bytes_received", 2*time.Second),
+		ln,
+	), mux); err != nil {
 		panic(err)
 	}
 }
