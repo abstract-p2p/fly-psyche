@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-type OncePer struct {
-	Dur time.Duration
+type OncePerDur struct {
+	dur time.Duration
 
 	mu   sync.Mutex
 	last time.Time
@@ -23,7 +23,13 @@ type OncePer struct {
 	isRunning bool
 }
 
-func (op *OncePer) Do(f func()) {
+func NewOncePerDur(dur time.Duration) *OncePerDur {
+	return &OncePerDur{
+		dur: dur,
+	}
+}
+
+func (op *OncePerDur) Do(f func()) {
 	op.mu.Lock()
 
 	// if timer or timer handler is already running,
@@ -36,14 +42,14 @@ func (op *OncePer) Do(f func()) {
 
 	// if not enough time has passed, schedule f to be called later
 	now := time.Now()
-	next := op.last.Add(op.Dur)
+	next := op.last.Add(op.dur)
 	if now.Before(next) {
 		op.pending = f
 
 		if op.timer == nil {
 			op.timer = time.AfterFunc(now.Sub(next), op.handleTimer)
 		} else {
-			op.timer.Reset(op.Dur)
+			op.timer.Reset(op.dur)
 		}
 
 		op.mu.Unlock()
@@ -58,9 +64,9 @@ func (op *OncePer) Do(f func()) {
 	go op.runner(f)
 }
 
-// Clear stops any running timers and scheduled functions,
+// Reset stops any running timers and scheduled functions,
 // and sets the last run time to now.
-func (op *OncePer) Clear() {
+func (op *OncePerDur) Reset() {
 	op.mu.Lock()
 	if op.timer != nil {
 		op.timer.Stop()
@@ -70,7 +76,7 @@ func (op *OncePer) Clear() {
 	op.mu.Unlock()
 }
 
-func (op *OncePer) runner(f func()) {
+func (op *OncePerDur) runner(f func()) {
 	f()
 
 	// If f is slow to execute or op.Dur is small, new fs will
@@ -98,7 +104,7 @@ func (op *OncePer) runner(f func()) {
 	}
 }
 
-func (op *OncePer) handleTimer() {
+func (op *OncePerDur) handleTimer() {
 	op.mu.Lock()
 
 	if op.pending == nil {
@@ -114,4 +120,44 @@ func (op *OncePer) handleTimer() {
 	op.mu.Unlock()
 
 	op.runner(f)
+}
+
+type OncePerDelta struct {
+	delta int64
+
+	mu      sync.Mutex
+	lastVal int64
+}
+
+func NewOncePerDelta(delta int64) *OncePerDelta {
+	return &OncePerDelta{
+		delta: delta,
+	}
+}
+
+func (opd *OncePerDelta) Do(val int64, fn func()) {
+	opd.mu.Lock()
+
+	// take absolute difference
+	diff := val - opd.lastVal
+	if diff < 0 {
+		diff = -diff
+	}
+
+	if diff < opd.delta {
+		opd.mu.Unlock()
+		return
+	}
+
+	opd.lastVal = val
+	opd.mu.Unlock()
+
+	fn()
+}
+
+// Reset just sets the lastVal
+func (opd *OncePerDelta) Reset(val int64) {
+	opd.mu.Lock()
+	opd.lastVal = val
+	opd.mu.Unlock()
 }

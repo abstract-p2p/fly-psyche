@@ -44,9 +44,11 @@ func (m *Metrics) pubAll() {
 
 	m.gaugesMu.Lock()
 	for _, g := range m.gauges {
-		b.WriteString(g.String())
+		val := g.Val()
+		b.WriteString(g.StringWithVal(val))
 		b.WriteByte('\n')
-		g.oncePer.Clear()
+		g.oncePerDur.Reset()
+		g.oncePerDelta.Reset(val)
 	}
 	m.gaugesMu.Unlock()
 
@@ -73,22 +75,22 @@ func (m *Metrics) Close() {
 }
 
 type Gauge struct {
-	name    string
-	val     int64
-	oncePer OncePer
-	m       *Metrics
+	name         string
+	val          int64
+	oncePerDur   *OncePerDur
+	oncePerDelta *OncePerDelta
+	m            *Metrics
 }
 
 // NewGauge creates a new gauge.
 //
 // Safe to call from multiple goroutines.
-func (m *Metrics) NewGauge(name string, oncePer time.Duration) *Gauge {
+func (m *Metrics) NewGauge(name string, oncePerDur time.Duration, oncePerDelta int64) *Gauge {
 	g := &Gauge{
-		name: name,
-		oncePer: OncePer{
-			Dur: oncePer,
-		},
-		m: m,
+		name:         name,
+		oncePerDur:   NewOncePerDur(oncePerDur),
+		oncePerDelta: NewOncePerDelta(oncePerDelta),
+		m:            m,
 	}
 
 	m.gaugesMu.Lock()
@@ -98,8 +100,8 @@ func (m *Metrics) NewGauge(name string, oncePer time.Duration) *Gauge {
 	return g
 }
 
-func (g *Gauge) String() string {
-	return g.StringWithVal(atomic.LoadInt64(&g.val))
+func (g *Gauge) Val() int64 {
+	return atomic.LoadInt64(&g.val)
 }
 
 func (g *Gauge) StringWithVal(val int64) string {
@@ -118,8 +120,10 @@ func (g *Gauge) Add(n int64) {
 		return
 	}
 	val := atomic.AddInt64(&g.val, n)
-	g.oncePer.Do(func() {
-		g.pub(val)
+	g.oncePerDur.Do(func() {
+		g.oncePerDelta.Do(val, func() {
+			g.pub(val)
+		})
 	})
 }
 

@@ -32,7 +32,7 @@ func main() {
 	})))
 
 	mux.Handle("/psyche", metrics.InFlightMiddleware(
-		mtr.NewGauge("requests_in_flight", 0),
+		mtr.NewGauge("requests_in_flight", 0, 0),
 		logRequest(psyche.NewWebsocketHandler(node)),
 	))
 
@@ -44,8 +44,8 @@ func main() {
 	}
 
 	if err := http.Serve(metrics.SentReceivedMiddleware(
-		mtr.NewGauge("bytes_sent", 2*time.Second),
-		mtr.NewGauge("bytes_received", 2*time.Second),
+		mtr.NewGauge("bytes_sent", time.Second, 64),
+		mtr.NewGauge("bytes_received", time.Second, 0),
 		ln,
 	), mux); err != nil {
 		panic(err)
