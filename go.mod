@@ -1,5 +1,5 @@
 module github.com/Gaboose/fly-psyche
 
-go 1.14
+go 1.15
 
-require github.com/abstract-p2p/go-psyche v0.0.0-20201017090336-e49e5b8061b1
+require github.com/abstract-p2p/go-psyche v0.0.0-20201128143704-2722e8dc835d

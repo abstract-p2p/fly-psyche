@@ -19,10 +19,15 @@ func logRequest(next http.Handler) http.Handler {
 
 func main() {
 	node := psyche.NewNode(map[string]interface{}{
-		"server": "fly-psyche",
+		"gateway": []interface{}{
+			map[string]interface{}{
+				"name":    "fly-psyche",
+				"version": "0.0.1",
+			},
+		},
 	})
 
-	mtr := metrics.New(node.NewEdge())
+	mtr := metrics.New()
 	defer mtr.Close()
 
 	mux := http.NewServeMux()
@@ -31,9 +36,20 @@ func main() {
 		w.Write([]byte("here meet psychic beams"))
 	})))
 
+	wsHandler := psyche.NewWebsocketHandler(node)
+
 	mux.Handle("/psyche", metrics.InFlightMiddleware(
-		mtr.NewGauge("requests_in_flight", 0, 0),
-		logRequest(psyche.NewWebsocketHandler(node)),
+		mtr.NewGauge("requests_in_flight", 0, 0, ""),
+		logRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c := wsHandler.Accept(w, r)
+
+			// Publish metrics on the connection's local node
+			edge := c.LocalNode().NewEdge()
+			defer edge.Close()
+			mtr.Attach(edge, c.RemoteAddr())
+
+			c.Serve()
+		})),
 	))
 
 	log.Println("listening on :8080")
@@ -44,8 +60,17 @@ func main() {
 	}
 
 	if err := http.Serve(metrics.SentReceivedMiddleware(
-		mtr.NewGauge("bytes_sent", time.Second, 64),
-		mtr.NewGauge("bytes_received", time.Second, 0),
+		// Server-wide metrics
+		mtr.NewGauge("bytes_sent", time.Second, 128, ""),
+		mtr.NewGauge("bytes_received", time.Second, 0, ""),
+
+		// Metrics specific to each connection
+		func(raddr string) (sent, received *metrics.Gauge) {
+			sent = mtr.NewGauge("bytes_sent{conn=this}", time.Second, 128, raddr)
+			received = mtr.NewGauge("bytes_received{conn=this}", time.Second, 0, raddr)
+			return
+		},
+
 		ln,
 	), mux); err != nil {
 		panic(err)

@@ -19,7 +19,8 @@ var (
 )
 
 type Metrics struct {
-	edge psyche.Interface
+	edgesMu sync.Mutex
+	edges   map[string]psyche.Interface
 
 	gaugesMu sync.Mutex
 	gauges   []*Gauge
@@ -28,46 +29,87 @@ type Metrics struct {
 	cancelCtx func()
 }
 
-func New(edge psyche.Interface) *Metrics {
+func New() *Metrics {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Metrics{
-		edge:      edge,
+		edges:     map[string]psyche.Interface{},
 		ctx:       ctx,
 		cancelCtx: cancel,
 	}
-	go m.servePollers()
 	return m
 }
 
-func (m *Metrics) pubAll() {
-	var b strings.Builder
+// pub publishes a payload to the edge with the given remote address.
+// if no raddr is provided, payload is publishes to all edges.
+func (m *Metrics) pub(raddr string, payload []byte) {
+	m.edgesMu.Lock()
+	defer m.edgesMu.Unlock()
+
+	if raddr != "" {
+		if e, ok := m.edges[raddr]; ok {
+			e.Pub(metricsSubject, payload)
+		}
+	} else {
+		for _, e := range m.edges {
+			e.Pub(metricsSubject, payload)
+		}
+	}
+}
+
+func (m *Metrics) pubMetrics(raddr string) {
+	b := strings.Builder{}
 
 	m.gaugesMu.Lock()
 	for _, g := range m.gauges {
 		val := g.Val()
-		b.WriteString(g.StringWithVal(val))
-		b.WriteByte('\n')
+
+		if g.raddr == "" || g.raddr == raddr {
+			b.WriteString(g.StringWithVal(val))
+			b.WriteByte('\n')
+		}
+
 		g.oncePerDur.Reset()
 		g.oncePerDelta.Reset(val)
 	}
 	m.gaugesMu.Unlock()
 
-	m.edge.Pub(metricsSubject, []byte(b.String()))
+	m.edgesMu.Lock()
+	m.edges[raddr].Pub(metricsSubject, []byte(b.String()))
+	m.edgesMu.Unlock()
 }
 
-func (m *Metrics) servePollers() error {
-	defer m.edge.Close()
-
-	m.edge.Sub(metricsSubject)
+func (m *Metrics) servePoller(edge psyche.Interface, raddr string) error {
+	defer edge.Close()
+	defer m.detach(edge, raddr)
 
 	var msg psyche.Message
-	for m.edge.ReadMsg(m.ctx, &msg) {
+	for edge.ReadMsg(m.ctx, &msg) {
 		if bytes.Equal(bytes.ToUpper(msg.Payload), []byte("POLL")) {
-			m.pubAll()
+			m.pubMetrics(raddr)
 		}
 	}
 
-	return m.edge.Err()
+	return edge.Err()
+}
+
+// Attach will subscribe to the metrics subject on the given
+// edge and publish metrics updates on it. Resources associated
+// with Attach will be freed when the given edge is closed.
+func (m *Metrics) Attach(edge psyche.Interface, remoteAddr string) {
+	m.edgesMu.Lock()
+	m.edges[remoteAddr] = edge
+	m.edgesMu.Unlock()
+
+	edge.Sub(metricsSubject)
+	go m.servePoller(edge, remoteAddr)
+}
+
+func (m *Metrics) detach(edge psyche.Interface, raddr string) {
+	m.edgesMu.Lock()
+	defer m.edgesMu.Unlock()
+	if e, ok := m.edges[raddr]; ok && edge == e {
+		delete(m.edges, raddr)
+	}
 }
 
 func (m *Metrics) Close() {
@@ -79,17 +121,19 @@ type Gauge struct {
 	val          int64
 	oncePerDur   *OncePerDur
 	oncePerDelta *OncePerDelta
+	raddr        string
 	m            *Metrics
 }
 
 // NewGauge creates a new gauge.
 //
 // Safe to call from multiple goroutines.
-func (m *Metrics) NewGauge(name string, oncePerDur time.Duration, oncePerDelta int64) *Gauge {
+func (m *Metrics) NewGauge(name string, oncePerDur time.Duration, oncePerDelta int64, raddr string) *Gauge {
 	g := &Gauge{
 		name:         name,
 		oncePerDur:   NewOncePerDur(oncePerDur),
 		oncePerDelta: NewOncePerDelta(oncePerDelta),
+		raddr:        raddr,
 		m:            m,
 	}
 
@@ -109,7 +153,7 @@ func (g *Gauge) StringWithVal(val int64) string {
 }
 
 func (g *Gauge) pub(v int64) {
-	g.m.edge.Pub(metricsSubject, []byte(g.StringWithVal(v)))
+	g.m.pub(g.raddr, []byte(g.StringWithVal(v)))
 }
 
 // Add adds a value to the gauge.
@@ -120,8 +164,8 @@ func (g *Gauge) Add(n int64) {
 		return
 	}
 	val := atomic.AddInt64(&g.val, n)
-	g.oncePerDur.Do(func() {
-		g.oncePerDelta.Do(val, func() {
+	g.oncePerDelta.Do(val, func() {
+		g.oncePerDur.Do(func() {
 			g.pub(val)
 		})
 	})
@@ -145,42 +189,58 @@ func InFlightMiddleware(gauge *Gauge, next http.Handler) http.Handler {
 
 type metricsConn struct {
 	net.Conn
-	sent,
-	received *Gauge
+	sentTotal,
+	receivedTotal,
+	sentThis,
+	receivedThis *Gauge
 }
 
 func (mc *metricsConn) Write(b []byte) (n int, err error) {
 	n, err = mc.Conn.Write(b)
-	mc.sent.Add(int64(n))
+	mc.sentTotal.Add(int64(n))
+	mc.sentThis.Add(int64(n))
 	return
 }
 
 func (mc *metricsConn) Read(b []byte) (n int, err error) {
 	n, err = mc.Conn.Read(b)
-	mc.received.Add(int64(n))
+	mc.receivedTotal.Add(int64(n))
+	mc.receivedThis.Add(int64(n))
 	return
 }
 
 type metricsListener struct {
 	net.Listener
-	sent,
-	received *Gauge
+	sentTotal,
+	receivedTotal *Gauge
+	connGauges func(raddr string) (sent, received *Gauge)
 }
 
 func (mln *metricsListener) Accept() (net.Conn, error) {
 	conn, err := mln.Listener.Accept()
 
+	raddr := conn.RemoteAddr()
+
+	sent, received := mln.connGauges(raddr.String())
+
 	return &metricsConn{
-		Conn:     conn,
-		sent:     mln.sent,
-		received: mln.received,
+		Conn:          conn,
+		sentTotal:     mln.sentTotal,
+		receivedTotal: mln.receivedTotal,
+		sentThis:      sent,
+		receivedThis:  received,
 	}, err
 }
 
-func SentReceivedMiddleware(sent, received *Gauge, ln net.Listener) net.Listener {
+func SentReceivedMiddleware(
+	sentTotal, receivedTotal *Gauge,
+	connGauges func(raddr string) (sent, received *Gauge),
+	ln net.Listener,
+) net.Listener {
 	return &metricsListener{
-		Listener: ln,
-		sent:     sent,
-		received: received,
+		Listener:      ln,
+		sentTotal:     sentTotal,
+		receivedTotal: receivedTotal,
+		connGauges:    connGauges,
 	}
 }
